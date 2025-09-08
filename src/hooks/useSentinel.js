@@ -1,4 +1,3 @@
-
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 
@@ -13,55 +12,68 @@ export function useSentinel() {
     const [apiError, setApiError] = useState('');
     const [threatScoreHistory, setThreatScoreHistory] = useState([]);
     const [whitelist, setWhitelist] = useState([]);
-    const [isConnected, setIsConnected] = useState(false);
 
-    // Fetch status from API
-    const fetchStatus = useCallback(async () => {
-        try {
-            const response = await fetch(`${API_BASE_URL}/status`);
-            if (!response.ok) throw new Error('Network response was not ok');
-            const data = await response.json();
-            
-            setIsMonitoring(data.isMonitoring);
-            setThreatScore(data.threatScore);
-            setLogs(data.logs || []);
-            setQuarantinedFiles(data.quarantinedFiles || []);
-            setWhitelist(data.whitelist || []);
-            setIsConnected(true);
-            setApiError('');
-
-            // Update chart data only if monitoring is active
-            if (data.isMonitoring) {
-                setThreatScoreHistory(prev => {
-                    const now = new Date();
-                    const newEntry = {
-                        time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`,
-                        score: data.threatScore
-                    };
-                    const MAX_CHART_DATA_POINTS = 30;
-                    return [...prev, newEntry].slice(-MAX_CHART_DATA_POINTS);
-                });
-            } else {
-                // Reset chart when not monitoring
-                setThreatScoreHistory(prev => prev.length > 0 ? [] : prev);
-            }
-        } catch (error) {
-            console.error("Failed to fetch status:", error);
-            setIsConnected(false);
-            setApiError('Connection to Sentinel lost. Is the Python server running?');
-        }
+    // Initialize with some sample data for testing
+    useEffect(() => {
+        // Add initial data point
+        setThreatScoreHistory([{
+            time: new Date().toLocaleTimeString(),
+            score: 0
+        }]);
     }, []);
 
-    // Initial status fetch and continuous polling
+    // API Polling Effect
     useEffect(() => {
-        // Fetch status immediately on mount
-        fetchStatus();
-
-        // Set up continuous polling every 2 seconds
-        const interval = setInterval(fetchStatus, 2000);
+        let interval;
         
-        return () => clearInterval(interval);
-    }, [fetchStatus]);
+        const fetchStatus = async () => {
+            try {
+                const response = await fetch(`${API_BASE_URL}/status`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                const data = await response.json();
+                
+                setThreatScore(data.threatScore || 0);
+                setLogs(data.logs || []);
+                setQuarantinedFiles(data.quarantinedFiles || []);
+                setWhitelist(data.whitelist || []);
+
+                // Update threat score history
+                setThreatScoreHistory(prev => {
+                    const now = new Date();
+                    const timeString = now.toLocaleTimeString();
+                    const newEntry = {
+                        time: timeString,
+                        score: data.threatScore || 0
+                    };
+                    const MAX_CHART_DATA_POINTS = 20;
+                    const newHistory = [...prev, newEntry].slice(-MAX_CHART_DATA_POINTS);
+                    return newHistory;
+                });
+                
+                setApiError('');
+            } catch (error) {
+                console.error("Failed to fetch status:", error);
+                setApiError('Connection to Sentinel lost. Is the Python server running?');
+            }
+        };
+
+        if (isMonitoring) {
+            // Fetch immediately
+            fetchStatus();
+            // Then set up interval
+            interval = setInterval(fetchStatus, 2000);
+        } else {
+            // Keep some history even when not monitoring
+            setThreatScoreHistory(prev => prev.length === 0 ? [{
+                time: new Date().toLocaleTimeString(),
+                score: 0
+            }] : prev);
+        }
+        
+        return () => {
+            if (interval) clearInterval(interval);
+        };
+    }, [isMonitoring]);
 
     const handleStart = useCallback(async (path) => {
         if (!path) {
@@ -78,10 +90,10 @@ export function useSentinel() {
             const data = await response.json();
             if (response.ok) {
                 setIsMonitoring(true);
-                setMonitoredFolder(path);
-                // Initialize chart with starting point
+                setMonitoredFolder(data.message.replace('Monitoring started on ', ''));
+                // Reset history when starting
                 setThreatScoreHistory([{
-                    time: new Date().toLocaleTimeString('en-US', { hour12: false }),
+                    time: new Date().toLocaleTimeString(),
                     score: 0
                 }]);
             } else {
@@ -103,7 +115,11 @@ export function useSentinel() {
                 setLogs([]);
                 setQuarantinedFiles([]);
                 setMonitoredFolder('');
-                setThreatScoreHistory([]);
+                // Keep final score in history
+                setThreatScoreHistory(prev => [...prev, {
+                    time: new Date().toLocaleTimeString(),
+                    score: 0
+                }]);
             } else {
                 const data = await response.json();
                 throw new Error(data.message || 'Failed to stop monitoring');
@@ -114,8 +130,14 @@ export function useSentinel() {
         }
     }, []);
 
-    const handleAddWhitelist = (path) => setWhitelist(prev => [...prev, path]);
-    const handleRemoveWhitelist = (pathToRemove) => setWhitelist(prev => prev.filter(p => p !== pathToRemove));
+    // Whitelist Handlers
+    const handleAddWhitelist = useCallback((path) => {
+        setWhitelist(prev => [...prev, path]);
+    }, []);
+    
+    const handleRemoveWhitelist = useCallback((pathToRemove) => {
+        setWhitelist(prev => prev.filter(path => path !== pathToRemove));
+    }, []);
 
     return {
         isMonitoring,
@@ -126,7 +148,6 @@ export function useSentinel() {
         apiError,
         threatScoreHistory,
         whitelist,
-        isConnected,
         handleStart,
         handleStop,
         handleAddWhitelist,
